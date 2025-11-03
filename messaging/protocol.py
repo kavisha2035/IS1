@@ -64,41 +64,55 @@ class MessagingService:
             t.start()
 
     def handle_client(self, client: socket.socket):
+        client_address = client.getpeername()
         try:
             public_key, private_key = generate_keypair()  # (e,n), (d,n)
             e, n = public_key
             d, _ = private_key
 
             handshake = f"{e},{n}\n".encode()
-            client.sendall(handshake)
-
-            line = recv_line(client)
-            if not line:
-                print("Client closed during handshake")
+            try:
+                client.sendall(handshake)
+            except ConnectionError as e:
+                print(f"Failed to send handshake to {client_address}: {e}")
                 return
-            parts = line.decode().split(":", 1)
-            if len(parts) != 2:
-                print("Invalid wrapped key format")
-                return
-            key_len = int(parts[0])
-            c_hex = parts[1]
-            c_bytes = bytes.fromhex(c_hex)
-            c_int = int.from_bytes(c_bytes, "big")
 
-            m_int = pow(c_int, d, n)
-            aes_key = m_int.to_bytes(key_len, "big")
-            print(f"Derived AES key ({len(aes_key)} bytes) for client")
+            try:
+                line = recv_line(client)
+                if not line:
+                    print(f"Client {client_address} closed during handshake")
+                    return
+                parts = line.decode().split(":", 1)
+                if len(parts) != 2:
+                    print(f"Invalid wrapped key format from {client_address}")
+                    return
+                key_len = int(parts[0])
+                c_hex = parts[1]
+                c_bytes = bytes.fromhex(c_hex)
+                c_int = int.from_bytes(c_bytes, "big")
 
-            while True:
-                frame = recv_frame(client)
-                if frame is None:
-                    break
-                try:
-                    plaintext = aes_decrypt(frame, aes_key)
-                    print(f"Client: {plaintext}")
-                except Exception as exc:
-                    print(f"Failed to decrypt message: {exc}")
-                    break
+                m_int = pow(c_int, d, n)
+                aes_key = m_int.to_bytes(key_len, "big")
+                print(f"Derived AES key ({len(aes_key)} bytes) for client {client_address}")
+
+                while True:
+                    try:
+                        frame = recv_frame(client)
+                        if frame is None:
+                            print(f"Client {client_address} closed connection")
+                            break
+                        plaintext = aes_decrypt(frame, aes_key)
+                        print(f"Client {client_address}: {plaintext}")
+                    except ConnectionError as e:
+                        print(f"Connection error with client {client_address}: {e}")
+                        break
+                    except Exception as exc:
+                        print(f"Failed to process message from {client_address}: {exc}")
+                        break
+            except ConnectionError as e:
+                print(f"Connection error during handshake with {client_address}: {e}")
+            except Exception as e:
+                print(f"Error handling client {client_address}: {e}")
         finally:
             client.close()
 
@@ -120,8 +134,11 @@ class MessagingService:
         e = int(e_str)
         n = int(n_str)
 
+        # Calculate the size needed for RSA operation
         n_bytes = (n.bit_length() + 7) // 8
-        key_len = max(1, min(16, n_bytes - 1)) if n_bytes > 1 else 1
+        
+        # Always use 16 bytes (128-bit) for AES key
+        key_len = 16  # AES-128 requires 16-byte key
         aes_key = generate_aes_key(key_len)
 
         m_int = int.from_bytes(aes_key, "big")
@@ -135,16 +152,21 @@ class MessagingService:
         def recv_thread():
             try:
                 while True:
-                    frame = recv_frame(self.socket)
-                    if frame is None:
-                        break
                     try:
+                        frame = recv_frame(self.socket)
+                        if frame is None:
+                            print("\nServer closed connection")
+                            break
                         txt = aes_decrypt(frame, aes_key)
                         print(f"\nServer: {txt}\n", end="")
+                    except ConnectionError as e:
+                        print(f"\nConnection error: {e}")
+                        break
                     except Exception as exc:
-                        print(f"Failed to decrypt server message: {exc}")
+                        print(f"\nFailed to process server message: {exc}")
                         break
             finally:
+                print("\nClosing connection to server")
                 self.socket.close()
 
         rt = threading.Thread(target=recv_thread, daemon=True)
@@ -152,11 +174,18 @@ class MessagingService:
 
         try:
             while True:
-                message = input("Enter message (or 'quit' to exit): ")
-                if message.lower() == "quit":
+                try:
+                    message = input("Enter message (or 'quit' to exit): ")
+                    if message.lower() == 'quit':
+                        break
+                    ct = aes_encrypt(message, aes_key)
+                    send_bytes(self.socket, ct)
+                except ConnectionError as e:
+                    print(f"\nConnection error while sending: {e}")
                     break
-                ct = aes_encrypt(message, aes_key)
-                send_bytes(self.socket, ct)
+                except Exception as e:
+                    print(f"\nError sending message: {e}")
+                    break
         finally:
             self.socket.close()
 
