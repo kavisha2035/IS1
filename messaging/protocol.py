@@ -2,8 +2,8 @@ import socket
 import threading
 from typing import Optional
 
-# Use the project's educational crypto implementation (do not modify it)
-from infoSec.ownCrypto import generate_keypair, generate_aes_key, aes_encrypt, aes_decrypt
+# Use the simplified crypto implementation added for debugging padding issues
+from infoSec.simpleCrypto import generate_keypair, generate_aes_key, aes_encrypt, aes_decrypt
 
 
 def send_bytes(sock: socket.socket, data: bytes) -> None:
@@ -94,6 +94,11 @@ class MessagingService:
                 m_int = pow(c_int, d, n)
                 aes_key = m_int.to_bytes(key_len, "big")
                 print(f"Derived AES key ({len(aes_key)} bytes) for client {client_address}")
+                # Debug: show derived AES key (hex) for verification
+                try:
+                    print(f"Derived AES key (hex): {aes_key.hex()}")
+                except Exception:
+                    print("Derived AES key: <non-bytes or cannot hex()>")
 
                 while True:
                     try:
@@ -101,6 +106,12 @@ class MessagingService:
                         if frame is None:
                             print(f"Client {client_address} closed connection")
                             break
+                        # Debug: print frame metadata before attempting decrypt
+                        try:
+                            iv = frame[:16]
+                            print(f"Received frame len={len(frame)}; iv={iv.hex()} ct_len={len(frame)-16}")
+                        except Exception:
+                            print(f"Received frame len={len(frame)} (iv/ct details unavailable)")
                         plaintext = aes_decrypt(frame, aes_key)
                         print(f"Client {client_address}: {plaintext}")
                     except ConnectionError as e:
@@ -141,6 +152,12 @@ class MessagingService:
         key_len = 16  # AES-128 requires 16-byte key
         aes_key = generate_aes_key(key_len)
 
+        # Debug: show client-generated AES key (hex) for verification
+        try:
+            print(f"Client AES key (hex): {aes_key.hex()}")
+        except Exception:
+            print("Client AES key: <non-bytes or cannot hex()>")
+
         m_int = int.from_bytes(aes_key, "big")
         c_int = pow(m_int, e, n)
         c_bytes = c_int.to_bytes(n_bytes, "big")
@@ -157,6 +174,12 @@ class MessagingService:
                         if frame is None:
                             print("\nServer closed connection")
                             break
+                        # Debug: print frame metadata before attempting decrypt
+                        try:
+                            iv = frame[:16]
+                            print(f"\nReceived frame len={len(frame)}; iv={iv.hex()} ct_len={len(frame)-16}")
+                        except Exception:
+                            print(f"\nReceived frame len={len(frame)} (iv/ct details unavailable)")
                         txt = aes_decrypt(frame, aes_key)
                         print(f"\nServer: {txt}\n", end="")
                     except ConnectionError as e:
