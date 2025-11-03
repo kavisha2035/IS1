@@ -3,7 +3,7 @@ import threading
 from typing import Optional
 
 # Use the project's educational crypto implementation (do not modify it)
-from infoSec.Crypto import generate_keypair, generate_aes_key, aes_encrypt, aes_decrypt
+from infoSec.ownCrypto import generate_keypair, generate_aes_key, aes_encrypt, aes_decrypt
 
 
 def send_bytes(sock: socket.socket, data: bytes) -> None:
