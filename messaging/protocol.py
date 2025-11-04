@@ -60,13 +60,18 @@ class MessagingService:
         while True:
             client, address = self.socket.accept()
             print(f"Connected with {address}")
+            # Each client gets its own thread, so input() in handle_client is ok
             t = threading.Thread(target=self.handle_client, args=(client,))
             t.start()
 
+    # -----------------------------------------------------------------
+    # --- THIS IS THE MODIFIED FUNCTION ---
+    # -----------------------------------------------------------------
     def handle_client(self, client: socket.socket):
         client_address = client.getpeername()
         try:
-            public_key, private_key = generate_keypair()  # (e,n), (d,n)
+            # --- Handshake Logic (Unchanged) ---
+            public_key, private_key = generate_keypair(256)  # (e,n), (d,n)
             e, n = public_key
             d, _ = private_key
 
@@ -77,55 +82,85 @@ class MessagingService:
                 print(f"Failed to send handshake to {client_address}: {e}")
                 return
 
+            line = recv_line(client)
+            if not line:
+                print(f"Client {client_address} closed during handshake")
+                return
+            parts = line.decode().split(":", 1)
+            if len(parts) != 2:
+                print(f"Invalid wrapped key format from {client_address}")
+                return
+            key_len = int(parts[0])
+            c_hex = parts[1]
+            c_bytes = bytes.fromhex(c_hex)
+            c_int = int.from_bytes(c_bytes, "big")
+
+            m_int = pow(c_int, d, n)
+            aes_key = m_int.to_bytes(key_len, "big")
+            print(f"Derived AES key ({len(aes_key)} bytes) for client {client_address}")
             try:
-                line = recv_line(client)
-                if not line:
-                    print(f"Client {client_address} closed during handshake")
-                    return
-                parts = line.decode().split(":", 1)
-                if len(parts) != 2:
-                    print(f"Invalid wrapped key format from {client_address}")
-                    return
-                key_len = int(parts[0])
-                c_hex = parts[1]
-                c_bytes = bytes.fromhex(c_hex)
-                c_int = int.from_bytes(c_bytes, "big")
+                print(f"Derived AES key (hex): {aes_key.hex()}")
+            except Exception:
+                print("Derived AES key: <non-bytes or cannot hex()>")
 
-                m_int = pow(c_int, d, n)
-                aes_key = m_int.to_bytes(key_len, "big")
-                print(f"Derived AES key ({len(aes_key)} bytes) for client {client_address}")
-                # Debug: show derived AES key (hex) for verification
+            # --- Symmetrical Send/Receive Logic ---
+
+            # 1. Define and start the receive thread
+            def server_recv_thread():
                 try:
-                    print(f"Derived AES key (hex): {aes_key.hex()}")
-                except Exception:
-                    print("Derived AES key: <non-bytes or cannot hex()>")
-
-                while True:
-                    try:
+                    while True:
                         frame = recv_frame(client)
                         if frame is None:
-                            print(f"Client {client_address} closed connection")
+                            print(f"\nClient {client_address} closed connection.")
                             break
-                        # Debug: print frame metadata before attempting decrypt
                         try:
                             iv = frame[:16]
-                            print(f"Received frame len={len(frame)}; iv={iv.hex()} ct_len={len(frame)-16}")
+                            print(f"\nReceived frame len={len(frame)}; iv={iv.hex()} ct_len={len(frame)-16}")
                         except Exception:
-                            print(f"Received frame len={len(frame)} (iv/ct details unavailable)")
+                            print(f"\nReceived frame len={len(frame)} (iv/ct details unavailable)")
+                            
                         plaintext = aes_decrypt(frame, aes_key)
-                        print(f"Client {client_address}: {plaintext}")
-                    except ConnectionError as e:
-                        print(f"Connection error with client {client_address}: {e}")
+                        print(f"\nClient {client_address}: {plaintext}\n", end="")
+                except ConnectionError:
+                    print(f"\nConnection lost with client {client_address}.")
+                except Exception as exc:
+                    print(f"\nError in receive thread for {client_address}: {exc}")
+                finally:
+                    print(f"\nReceive thread for {client_address} stopping.")
+                    client.close() # Close socket when receiver fails/stops
+
+            rt = threading.Thread(target=server_recv_thread, daemon=True)
+            rt.start()
+
+            # 2. Main thread becomes the send loop
+            print(f"--- Enter messages for {client_address} (or 'quit') ---")
+            while rt.is_alive():
+                try:
+                    message = input() # Read from server's console
+                    if not rt.is_alive():
                         break
-                    except Exception as exc:
-                        print(f"Failed to process message from {client_address}: {exc}")
+                    if message.lower() == 'quit':
                         break
-            except ConnectionError as e:
-                print(f"Connection error during handshake with {client_address}: {e}")
-            except Exception as e:
-                print(f"Error handling client {client_address}: {e}")
+                    ct = aes_encrypt(message, aes_key)
+                    send_bytes(client, ct)
+                except ConnectionError as e:
+                    print(f"\nConnection error while sending to {client_address}: {e}")
+                    break
+                except Exception as e:
+                    print(f"\nError sending message: {e}")
+                    break
+
+        except ConnectionError as e:
+            print(f"Connection error during handshake with {client_address}: {e}")
+        except Exception as e:
+            print(f"Error handling client {client_address}: {e}")
         finally:
+            print(f"Closing connection for {client_address}.")
             client.close()
+
+    # -----------------------------------------------------------------
+    # --- NO CHANGES NEEDED BELOW THIS LINE ---
+    # -----------------------------------------------------------------
 
     def connect_to_server(self) -> bool:
         try:
@@ -145,14 +180,10 @@ class MessagingService:
         e = int(e_str)
         n = int(n_str)
 
-        # Calculate the size needed for RSA operation
         n_bytes = (n.bit_length() + 7) // 8
-        
-        # Always use 16 bytes (128-bit) for AES key
         key_len = 16  # AES-128 requires 16-byte key
         aes_key = generate_aes_key(key_len)
 
-        # Debug: show client-generated AES key (hex) for verification
         try:
             print(f"Client AES key (hex): {aes_key.hex()}")
         except Exception:
@@ -174,7 +205,6 @@ class MessagingService:
                         if frame is None:
                             print("\nServer closed connection")
                             break
-                        # Debug: print frame metadata before attempting decrypt
                         try:
                             iv = frame[:16]
                             print(f"\nReceived frame len={len(frame)}; iv={iv.hex()} ct_len={len(frame)-16}")

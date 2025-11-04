@@ -14,7 +14,6 @@ This keeps the project root clean and routes logic into `messaging/protocol.py`.
 
 from messaging import MessagingService
 
-
 def main():
     mode = input("Enter mode (server/client): ").lower()
     host = input("Enter host IP (default: 127.0.0.1): ") or "127.0.0.1"
